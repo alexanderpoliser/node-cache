@@ -1,4 +1,4 @@
-![Logo](./logo/logo.png)
+![Logo](https://raw.githubusercontent.com/alexanderpoliser/node-cache/master/logo/logo.png)
 
 [![GitHub issues](https://img.shields.io/github/issues/alexanderpoliser/node-cache)](https://github.com/alexanderpoliser/node-cache/issues)
 

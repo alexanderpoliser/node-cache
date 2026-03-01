@@ -36,10 +36,13 @@
   ],
   "main": "./dist/node-cache.js",
   "types": "./dist/node-cache.d.ts",
-  "homepage": "https://github.com/node-cache/node-cache",
+  "homepage": "https://github.com/alexanderpoliser/node-cache",
   "repository": {
     "type": "git",
-    "url": "git://github.com/node-cache/node-cache.git"
+    "url": "git+https://github.com/alexanderpoliser/node-cache.git"
+  },
+  "bugs": {
+    "url": "https://github.com/alexanderpoliser/node-cache/issues"
   },
   "license": "MIT",
   "engines": {
