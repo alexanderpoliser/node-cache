@@ -17,6 +17,7 @@ deploy.json
 /index.js
 /test/*.js
 /lib/*.js
+/dist
 *.log
 
 coverage/

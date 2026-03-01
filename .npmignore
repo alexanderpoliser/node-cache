@@ -14,3 +14,16 @@ coffeelint.json
 coverage/
 .nyc_output/
 lcov.info
+/bench
+/src
+/lib
+/_src
+tsconfig.build.json
+tsconfig.json
+/.local
+/docs
+index.js
+index.d.ts
+CONTRIBUTING.md
+MAINTENANCE.md
+RELEASE_POLICY.md
