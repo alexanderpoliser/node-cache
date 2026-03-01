@@ -1,5 +1,5 @@
 {
-  "name": "node-cache",
+  "name": "@alexanderpoliser/node-cache",
   "description": "Simple and fast NodeJS internal caching. Node internal in memory cache like memcached.",
   "keywords": [
     "cache",
@@ -25,22 +25,17 @@
     "memcached",
     "object"
   ],
-  "version": "5.1.2",
+  "version": "6.0.0",
   "author": "mpneuried <mp@tcs.de>",
   "maintainers": [
     {
-      "name": "M. Peter",
-      "email": "mp@tcs.de",
-      "url": "https://github.com/mpneuried"
-    },
-    {
-      "name": "Joshy",
-      "email": "erdiicodes@gmail.com",
-      "url": "https://erdii.engineering/"
+      "name": "Alexander Poliser",
+      "email": "alexanderpoliser@gmail.com",
+      "url": "https://github.com/alexanderpoliser"
     }
   ],
-  "main": "./index.js",
-  "types": "./index.d.ts",
+  "main": "./dist/node-cache.js",
+  "types": "./dist/node-cache.d.ts",
   "homepage": "https://github.com/node-cache/node-cache",
   "repository": {
     "type": "git",
@@ -48,33 +43,28 @@
   },
   "license": "MIT",
   "engines": {
-    "node": ">= 8.0.0"
+    "node": ">= 20.0.0"
   },
   "scripts": {
-    "test": "nyc --require coffee-script/register mocha _src/test/mocha_test.coffee -R spec && tsc",
-    "build": "grunt build",
-    "export-coverage": "nyc report --reporter=text-lcov > lcov.info"
+    "test": "nyc --require coffeescript/register mocha _src/test/mocha_test.coffee _src/test/api_contract_test.coffee -R spec && tsc",
+    "build": "tsc -p tsconfig.build.json",
+    "test:ts": "cross-env NODE_CACHE_IMPL=ts nyc --require coffeescript/register mocha _src/test/mocha_test.coffee _src/test/api_contract_test.coffee -R spec",
+    "bench": "node bench/benchmark.js",
+    "bench:heap": "node bench/heap-vs-linear.js",
+    "export-coverage": "nyc report --reporter=text-lcov > lcov.info",
+    "prepare": "npm run build"
   },
   "dependencies": {
-    "clone": "2.x"
+    "clone": "^2.1.2"
   },
   "devDependencies": {
-    "@types/node": "^8.9.4",
+    "@types/node": "^22.15.0",
     "coffee-coverage": "^3.0.1",
-    "coffee-script": "1.x",
-    "coveralls": "^3.0.3",
-    "grunt": "^1.0.4",
-    "grunt-banner": "0.6.x",
-    "grunt-cli": "^1.2.0",
-    "grunt-contrib-clean": "1.0.x",
-    "grunt-contrib-coffee": "^2.1.0",
-    "grunt-contrib-watch": "^1.1.0",
-    "grunt-include-replace": "3.2.x",
-    "grunt-mocha-cli": "^6.0.0",
-    "grunt-run": "^0.8.1",
-    "mocha": "^7.2.0",
-    "nyc": "^15.1.0",
-    "should": "11.x",
-    "typescript": "^4.2.4"
+    "coffeescript": "^2.7.0",
+    "cross-env": "^7.0.3",
+    "mocha": "~11.3.0",
+    "nyc": "^17.1.0",
+    "should": "^13.2.3",
+    "typescript": "^5.9.3"
   }
 }
