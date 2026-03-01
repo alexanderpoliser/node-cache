@@ -100,11 +100,6 @@ declare namespace NodeCache {
 			key: Key,
 		): number|undefined;
 
-		getTtl(
-			key: Key,
-			cb?: Callback<boolean>
-		): boolean;
-
 		/**
 		 * list all keys within this cache
 		 * @param cb Callback function
@@ -187,7 +182,6 @@ declare namespace NodeCache {
 		 */
 		useClones?: boolean;
 
-		errorOnMissing?: boolean;
 		deleteOnExpire?: boolean;
 
 		/**
@@ -207,6 +201,17 @@ declare namespace NodeCache {
 		 * @memberof Options
 		 */
 		maxKeys?: number;
+
+		/**
+		 * en/disable statistics tracking (hits, misses, ksize, vsize).
+		 * When disabled, getStats() returns zeroed counters.
+		 * maxKeys enforcement still works independently.
+		 *
+		 * @type {boolean}
+		 * @default true
+		 * @memberof Options
+		 */
+		enableStats?: boolean;
 	}
 
 	interface Stats {
@@ -220,6 +225,8 @@ declare namespace NodeCache {
 	interface WrappedValue<T> {
 		// ttl
 		t: number;
+		// expired-emitted flag
+		e: boolean;
 		// value
 		v: T;
 	}
@@ -299,12 +306,12 @@ declare class NodeCache extends events.EventEmitter {
 	fetch<T>(
 		key: Key,
 		ttl: number | string,
-		value: () => T,
+		value: T | (() => T),
   ): T;
 
 	fetch<T>(
 		key: Key,
-		value: () => T,
+		value: T | (() => T),
 	): T;
 
 	/**
@@ -319,7 +326,6 @@ declare class NodeCache extends events.EventEmitter {
 	/**
 	 * remove keys
 	 * @param keys cache key to delete or a array of cache keys
-	 * @param cb Callback function
 	 * @returns Number of deleted keys
 	 */
 	del(
@@ -353,10 +359,6 @@ declare class NodeCache extends events.EventEmitter {
 	getTtl(
 		key: Key,
 	): number|undefined;
-
-	getTtl(
-		key: Key
-	): boolean;
 
 	/**
 	 * list all keys within this cache

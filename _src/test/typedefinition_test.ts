@@ -1,8 +1,5 @@
-import NodeCache = require("../../");
-
-import Options = NodeCache.Options;
-import Stats = NodeCache.Stats;
-import Callback = NodeCache.Callback;
+import NodeCache = require("../../dist/node-cache");
+import { Options, Stats, Callback } from "../../dist/types";
 
 interface TypeSample {
 	a: number;

@@ -6,7 +6,7 @@ clone = require "lodash/clone"
 
 pkg = JSON.parse fs.readFileSync("package.json")
 
-nodeCache = require "../"
+nodeCache = require "./resolve-impl"
 { randomNumber, randomString, diffKeys } = require "./helpers"
 
 localCache = new nodeCache({
@@ -36,6 +36,17 @@ localCacheNoDelete = new nodeCache({
 
 localCacheMset = new nodeCache({
 	stdTTL: 0
+})
+
+localCacheNoStats = new nodeCache({
+	enableStats: false
+	checkperiod: 0
+})
+
+localCacheNoStatsMaxKeys = new nodeCache({
+	enableStats: false
+	maxKeys: 2
+	checkperiod: 0
 })
 
 BENCH = {}
@@ -378,6 +389,23 @@ describe "`#{pkg.name}@#{pkg.version}` on `node@#{process.version}`", () ->
 
 			setKey3 = localCacheMaxKeys.set(state.key3, state.value3, 0)
 			true.should.eql setKey3
+			return
+
+		it "allow mset to fill cache up to max keys", () ->
+			cache = new nodeCache({
+				maxKeys: 2
+			})
+
+			true.should.eql cache.mset([
+				{ key: "k1", val: "v1" }
+				{ key: "k2", val: "v2" }
+			])
+			2.should.eql cache.getStats().keys
+
+			(() -> cache.mset([{ key: "k3", val: "v3" }])).should.throw({
+				name: "ECACHEFULL"
+				message: "Cache max keys amount exceeded"
+			})
 			return
 
 		return
@@ -1326,5 +1354,465 @@ describe "`#{pkg.name}@#{pkg.version}` on `node@#{process.version}`", () ->
 			return
 		)
 
+		describe("#330 / #221 - undefined values should not become null", () ->
+			cacheClone = null
+			cacheNoClone = null
+
+			before(() ->
+				cacheClone = new nodeCache()
+				cacheNoClone = new nodeCache({
+					useClones: false
+				})
+				return
+			)
+
+			it("get should return undefined for undefined values (useClones=true)", () ->
+				cacheClone.set("test", undefined)
+				should(cacheClone.get("test")).be.undefined()
+				return
+			)
+
+			it("get should return undefined for undefined values (useClones=false)", () ->
+				cacheNoClone.set("test", undefined)
+				should(cacheNoClone.get("test")).be.undefined()
+				return
+			)
+			return
+		)
+
+		describe("#329 / #313 - expired handlers must not recurse or crash", () ->
+			cache = null
+
+			beforeEach(() ->
+				cache = new nodeCache({
+					stdTTL: 0.02
+					checkperiod: 0
+					deleteOnExpire: false
+					useClones: false
+				})
+				return
+			)
+
+			afterEach(() ->
+				cache.close()
+				return
+			)
+
+			it("get should not throw when expired listener deletes key", (done) ->
+				cache.on("expired", (key, value) ->
+					cache.del(key)
+					return
+				)
+
+				cache.set("k", "v")
+				setTimeout(() ->
+					should(cache.get("k")).be.undefined()
+					done()
+					return
+				, 30)
+				return
+			)
+
+			it("expired should be emitted only once per stale key", (done) ->
+				expiredCount = 0
+				cache.on("expired", (key, value) ->
+					expiredCount++
+					cache.has(key)
+					cache.get(key)
+					return
+				)
+
+				cache.set("k", "v")
+				setTimeout(() ->
+					cache.has("k")
+					cache.get("k")
+					cache._checkData(false)
+					expiredCount.should.eql(1)
+					done()
+					return
+				, 30)
+				return
+			)
+			return
+		)
+
 		return
+
+	describe "Phase 1 — regression and coverage hardening", () ->
+
+		describe "maxKeys + mset edge cases", () ->
+
+			it "mset updating an existing key does not consume a new slot", () ->
+				cache = new nodeCache({ maxKeys: 1 })
+				cache.set("k", "v1")
+				1.should.eql cache.getStats().keys
+				# updating existing key via mset must not throw ECACHEFULL
+				true.should.eql cache.mset([{ key: "k", val: "v2" }])
+				"v2".should.eql cache.get("k")
+				1.should.eql cache.getStats().keys
+				cache.close()
+				return
+
+			it "set updating an existing key does not throw when cache is at maxKeys", () ->
+				cache = new nodeCache({ maxKeys: 1 })
+				cache.set("k", "v1")
+				# cache is now full — updating "k" must still succeed
+				true.should.eql cache.set("k", "v2")
+				"v2".should.eql cache.get("k")
+				1.should.eql cache.getStats().keys
+				cache.close()
+				return
+
+			it "mset with duplicate keys in same call is deduplicated for capacity check", () ->
+				cache = new nodeCache({ maxKeys: 1 })
+				# two entries for the same key must not be counted as two new keys
+				true.should.eql cache.mset([
+					{ key: "a", val: "first" }
+					{ key: "a", val: "second" }
+				])
+				"second".should.eql cache.get("a")
+				1.should.eql cache.getStats().keys
+				cache.close()
+				return
+
+			return
+
+		describe "edge TTL behavior", () ->
+
+			it "ttl with negative value deletes the key", () ->
+				cache = new nodeCache()
+				delFired = false
+				cache.once "del", () -> delFired = true
+				cache.set("k", "v", 100)
+				true.should.eql cache.ttl("k", -1)
+				should(cache.get("k")).be.undefined()
+				delFired.should.eql true
+				cache.close()
+				return
+
+			it "getTtl returns 0 for a key stored with infinite TTL", () ->
+				cache = new nodeCache()
+				cache.set("k", "v", 0)
+				0.should.eql cache.getTtl("k")
+				cache.close()
+				return
+
+			it "ttl returns false for a non-existent key", () ->
+				cache = new nodeCache()
+				false.should.eql cache.ttl("no-such-key", 10)
+				cache.close()
+				return
+
+			return
+
+		describe "event emission verification", () ->
+
+			it "flushAll emits flush event", () ->
+				cache = new nodeCache()
+				flushed = false
+				cache.once "flush", () -> flushed = true
+				cache.set("k", "v")
+				cache.flushAll()
+				flushed.should.eql true
+				cache.close()
+				return
+
+			it "flushStats emits flush_stats event", () ->
+				cache = new nodeCache()
+				fired = false
+				cache.once "flush_stats", () -> fired = true
+				cache.flushStats()
+				fired.should.eql true
+				cache.close()
+				return
+
+			it "set emits set event with correct key and value", () ->
+				cache = new nodeCache()
+				emittedKey = null
+				emittedVal = null
+				cache.once "set", (key, val) ->
+					emittedKey = key
+					emittedVal = val
+					return
+				cache.set("mykey", "myval")
+				emittedKey.should.eql "mykey"
+				emittedVal.should.eql "myval"
+				cache.close()
+				return
+
+			return
+
+		describe "event reentrancy — expanded", () ->
+
+			it "set inside expired handler does not throw (deleteOnExpire=true)", (done) ->
+				cache = new nodeCache({
+					stdTTL: 0.02
+					checkperiod: 0
+					deleteOnExpire: true
+				})
+				refreshed = false
+				cache.on "expired", (key) ->
+					unless refreshed
+						refreshed = true
+						cache.set(key, "new-value", 100)
+					return
+				cache.set("k", "original")
+				setTimeout(() ->
+					cache._checkData(false)
+					"new-value".should.eql cache.get("k")
+					cache.close()
+					done()
+					return
+				, 50)
+				return
+
+			it "repeated _checkData calls do not re-emit expired for same stale key (deleteOnExpire=false)", (done) ->
+				cache = new nodeCache({
+					stdTTL: 0.02
+					checkperiod: 0
+					deleteOnExpire: false
+				})
+				expiredCount = 0
+				cache.on "expired", () -> expiredCount++
+				cache.set("k", "v")
+				setTimeout(() ->
+					cache._checkData(false)
+					cache._checkData(false)
+					cache._checkData(false)
+					expiredCount.should.eql 1
+					cache.close()
+					done()
+					return
+				, 40)
+				return
+
+			return
+
+		describe "CJS smoke test", () ->
+
+			it "require resolves to a constructor", () ->
+				NC = require "../"
+				NC.should.be.a.Function()
+				return
+
+			it "basic set / get / TTL expiry works end-to-end", (done) ->
+				NC = require "../"
+				cache = new NC({ stdTTL: 0.1 })
+				cache.set("hello", { world: true })
+				v = cache.get("hello")
+				v.world.should.eql true
+				setTimeout(() ->
+					should(cache.get("hello")).be.undefined()
+					cache.close()
+					done()
+					return
+				, 250)
+				return
+
+			it "del event fires on key removal", () ->
+				NC = require "../"
+				cache = new NC()
+				fired = false
+				cache.once "del", () -> fired = true
+				cache.set("k", "v")
+				cache.del("k")
+				fired.should.eql true
+				cache.close()
+				return
+
+			return
+
+		return
+
+	describe "enableStats option", () ->
+
+		before () ->
+			localCacheNoStats.flushAll()
+			localCacheNoStatsMaxKeys.flushAll()
+			return
+
+		it "stats remain zeroed after set/get/del when enableStats is false", () ->
+			localCacheNoStats.set("a", "value1")
+			localCacheNoStats.set("b", { complex: "object", arr: [1,2,3] })
+			localCacheNoStats.get("a")
+			localCacheNoStats.get("nonexistent")
+			localCacheNoStats.del("a")
+
+			s = localCacheNoStats.getStats()
+			s.hits.should.eql 0
+			s.misses.should.eql 0
+			s.keys.should.eql 0
+			s.ksize.should.eql 0
+			s.vsize.should.eql 0
+
+			# cleanup
+			localCacheNoStats.flushAll()
+			return
+
+		it "maxKeys still enforced when stats disabled", () ->
+			localCacheNoStatsMaxKeys.set("k1", "v1")
+			localCacheNoStatsMaxKeys.set("k2", "v2")
+			(() -> localCacheNoStatsMaxKeys.set("k3", "v3")).should.throw({errorcode: "ECACHEFULL"})
+
+			# cleanup
+			localCacheNoStatsMaxKeys.flushAll()
+			return
+
+		it "maxKeys allows updates to existing keys when stats disabled", () ->
+			localCacheNoStatsMaxKeys.set("k1", "v1")
+			localCacheNoStatsMaxKeys.set("k2", "v2")
+			# updating existing key should NOT throw
+			localCacheNoStatsMaxKeys.set("k1", "updated").should.eql true
+			localCacheNoStatsMaxKeys.get("k1").should.eql "updated"
+
+			# cleanup
+			localCacheNoStatsMaxKeys.flushAll()
+			return
+
+		it "mset capacity check works when stats disabled", () ->
+			(() -> localCacheNoStatsMaxKeys.mset([
+				{key: "a", val: 1}
+				{key: "b", val: 2}
+				{key: "c", val: 3}
+			])).should.throw({errorcode: "ECACHEFULL"})
+
+			# cleanup
+			localCacheNoStatsMaxKeys.flushAll()
+			return
+
+		it "default enableStats=true preserves backward-compatible behavior", () ->
+			cache = new nodeCache({ checkperiod: 0 })
+			cache.set("x", "val")
+			cache.get("x")
+			cache.get("miss")
+			s = cache.getStats()
+			s.hits.should.eql 1
+			s.misses.should.eql 1
+			s.keys.should.eql 1
+			cache.close()
+			return
+
+		it "flushStats does not break maxKeys enforcement", () ->
+			localCacheNoStatsMaxKeys.set("k1", "v1")
+			localCacheNoStatsMaxKeys.set("k2", "v2")
+			localCacheNoStatsMaxKeys.flushStats()
+			# maxKeys should still be enforced after flushStats
+			(() -> localCacheNoStatsMaxKeys.set("k3", "v3")).should.throw({errorcode: "ECACHEFULL"})
+
+			# cleanup
+			localCacheNoStatsMaxKeys.flushAll()
+			return
+
+		it "flushStats does not break maxKeys even with stats enabled", () ->
+			cache = new nodeCache({ maxKeys: 2, checkperiod: 0 })
+			cache.set("k1", "v1")
+			cache.set("k2", "v2")
+			cache.flushStats()
+			# should still enforce maxKeys since _keyCount is independent
+			(() -> cache.set("k3", "v3")).should.throw({errorcode: "ECACHEFULL"})
+			cache.close()
+			return
+
+		return
+
+	describe "TTL min-heap expiry", () ->
+
+		it "only expired keys are removed by _checkData", (done) ->
+			cache = new nodeCache({ stdTTL: 0, checkperiod: 0 })
+			cache.set("short", "val1", 0.03)
+			cache.set("long", "val2", 10)
+			cache.set("infinite", "val3", 0)
+			setTimeout(() ->
+				cache._checkData(false)
+				should(cache.get("short")).be.undefined()
+				cache.get("long").should.eql "val2"
+				cache.get("infinite").should.eql "val3"
+				cache.close()
+				done()
+				return
+			, 50)
+			return
+
+		it "TTL reset via ttl() does not cause premature expiry", (done) ->
+			cache = new nodeCache({ stdTTL: 0, checkperiod: 0 })
+			cache.set("k", "v", 0.03)
+			# reset TTL to a long value before it expires
+			cache.ttl("k", 10)
+			setTimeout(() ->
+				cache._checkData(false)
+				cache.get("k").should.eql "v"
+				cache.close()
+				done()
+				return
+			, 50)
+			return
+
+		it "deleted key is not double-processed by _checkData", (done) ->
+			cache = new nodeCache({ stdTTL: 0.03, checkperiod: 0 })
+			expiredKeys = []
+			cache.on "expired", (key) -> expiredKeys.push(key)
+			cache.set("k", "v")
+			cache.del("k")
+			setTimeout(() ->
+				cache._checkData(false)
+				# no expired event should fire for an already-deleted key
+				expiredKeys.length.should.eql 0
+				cache.close()
+				done()
+				return
+			, 50)
+			return
+
+		it "flushAll clears heap — old TTLs do not affect new keys", (done) ->
+			cache = new nodeCache({ stdTTL: 0.03, checkperiod: 0 })
+			cache.set("old", "val")
+			cache.flushAll()
+			cache.set("new", "val2", 10)
+			setTimeout(() ->
+				cache._checkData(false)
+				# new key should still exist
+				cache.get("new").should.eql "val2"
+				cache.close()
+				done()
+				return
+			, 50)
+			return
+
+		it "infinite-TTL keys never expire via _checkData", (done) ->
+			cache = new nodeCache({ stdTTL: 0, checkperiod: 0 })
+			cache.set("inf", "value", 0)
+			setTimeout(() ->
+				cache._checkData(false)
+				cache.get("inf").should.eql "value"
+				cache.close()
+				done()
+				return
+			, 50)
+			return
+
+		it "deleteOnExpire=false with heap: event emitted once, key retained", (done) ->
+			cache = new nodeCache({
+				stdTTL: 0.02
+				checkperiod: 0
+				deleteOnExpire: false
+			})
+			expiredCount = 0
+			cache.on "expired", () -> expiredCount++
+			cache.set("k", "v")
+			setTimeout(() ->
+				cache._checkData(false)
+				# key should still exist
+				cache.has("k").should.eql true
+				expiredCount.should.eql 1
+				# second checkData should not re-emit (data.e flag)
+				cache._checkData(false)
+				expiredCount.should.eql 1
+				cache.close()
+				done()
+				return
+			, 40)
+			return
+
+		return
+
 	return
