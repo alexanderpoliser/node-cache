@@ -1,6 +1,63 @@
 clone = require( "clone" )
 EventEmitter = require('events').EventEmitter
 
+# internal min-heap for efficient TTL expiry (sorted by expireAt timestamp)
+class MinHeap
+	constructor: ->
+		@_heap = []
+
+	size: -> @_heap.length
+
+	peek: -> @_heap[0] or null
+
+	push: (key, expireAt) ->
+		@_heap.push({ key: key, expireAt: expireAt })
+		@_bubbleUp(@_heap.length - 1)
+		return
+
+	pop: ->
+		top = @_heap[0]
+		last = @_heap.pop()
+		if @_heap.length > 0 and last?
+			@_heap[0] = last
+			@_sinkDown(0)
+		return top
+
+	clear: ->
+		@_heap = []
+		return
+
+	_bubbleUp: (idx) ->
+		while idx > 0
+			parent = (idx - 1) >> 1
+			if @_heap[idx].expireAt < @_heap[parent].expireAt
+				tmp = @_heap[idx]
+				@_heap[idx] = @_heap[parent]
+				@_heap[parent] = tmp
+				idx = parent
+			else
+				break
+		return
+
+	_sinkDown: (idx) ->
+		len = @_heap.length
+		loop
+			left = 2 * idx + 1
+			right = 2 * idx + 2
+			smallest = idx
+			if left < len and @_heap[left].expireAt < @_heap[smallest].expireAt
+				smallest = left
+			if right < len and @_heap[right].expireAt < @_heap[smallest].expireAt
+				smallest = right
+			if smallest isnt idx
+				tmp = @_heap[idx]
+				@_heap[idx] = @_heap[smallest]
+				@_heap[smallest] = tmp
+				idx = smallest
+			else
+				break
+		return
+
 # generate superclass
 module.exports = class NodeCache extends EventEmitter
 	constructor: ( @options = {} )->
@@ -10,6 +67,9 @@ module.exports = class NodeCache extends EventEmitter
 
 		# container for cached data
 		@data = {}
+
+		# expiry heap for efficient TTL checking
+		@_expiryHeap = new MinHeap()
 
 		# module options
 		@options = Object.assign(
@@ -29,6 +89,8 @@ module.exports = class NodeCache extends EventEmitter
 			deleteOnExpire: true
 			# enable legacy callbacks
 			enableLegacyCallbacks: false
+			# en/disable statistics tracking. When false, getStats() returns zeroed counters.
+			enableStats: true
 			# max amount of keys that are being stored
 			maxKeys: -1
 		, @options )
@@ -70,6 +132,9 @@ module.exports = class NodeCache extends EventEmitter
 			ksize: 0
 			vsize: 0
 
+		# lightweight key counter for maxKeys enforcement, independent of stats
+		@_keyCount = 0
+
 		# pre allocate valid keytypes array
 		@validKeyTypes = ["string", "number"]
 
@@ -94,15 +159,20 @@ module.exports = class NodeCache extends EventEmitter
 		if (err = @_isInvalidKey( key ))?
 			throw err
 
+		data = @data[ key ]
+
 		# get data and increment stats
-		if @data[ key ]? and @_check( key, @data[ key ] )
-			@stats.hits++
-			_ret = @_unwrap( @data[ key ] )
+		if data? and @_check( key, data )
+			if not @data[ key ]?
+				@stats.misses++ if @options.enableStats
+				return undefined
+			@stats.hits++ if @options.enableStats
+			_ret = @_unwrap( data )
 			# return data
 			return _ret
 		else
 			# if not found return undefined
-			@stats.misses++
+			@stats.misses++ if @options.enableStats
 			return undefined
 
 	# ## mget
@@ -130,13 +200,18 @@ module.exports = class NodeCache extends EventEmitter
 			if (err = @_isInvalidKey( key ))?
 				throw err
 
+			data = @data[ key ]
+
 			# get data and increment stats
-			if @data[ key ]? and @_check( key, @data[ key ] )
-				@stats.hits++
-				oRet[ key ] = @_unwrap( @data[ key ] )
+			if data? and @_check( key, data )
+				if not @data[ key ]?
+					@stats.misses++ if @options.enableStats
+					continue
+				@stats.hits++ if @options.enableStats
+				oRet[ key ] = @_unwrap( data )
 			else
 				# if not found return a error
-				@stats.misses++
+				@stats.misses++ if @options.enableStats
 
 		# return all found keys
 		return oRet
@@ -158,8 +233,8 @@ module.exports = class NodeCache extends EventEmitter
 	#	myCache.set "myKey", "my_String Value", 10
 	#
 	set: ( key, value, ttl )=>
-		# check if cache is overflowing
-		if (@options.maxKeys > -1 && @stats.keys >= @options.maxKeys)
+		# check if cache is overflowing — only for genuinely new keys, not updates
+		if (@options.maxKeys > -1 && @_keyCount >= @options.maxKeys && not @data[key]?)
 			_err = @_error( "ECACHEFULL" )
 			throw _err
 
@@ -181,16 +256,23 @@ module.exports = class NodeCache extends EventEmitter
 		# remove existing data from stats
 		if @data[ key ]
 			existent = true
-			@stats.vsize -= @_getValLength( @_unwrap( @data[ key ], false ) )
+			if @options.enableStats
+				@stats.vsize -= @_getValLength( @_unwrap( @data[ key ], false ) )
 
 		# set the value
 		@data[ key ] = @_wrap( value, ttl )
-		@stats.vsize += @_getValLength( value )
+		# push to expiry heap if key has a finite TTL
+		if @data[ key ].t > 0
+			@_expiryHeap.push( key, @data[ key ].t )
+		if @options.enableStats
+			@stats.vsize += @_getValLength( value )
 
 		# only add the keys and key-size if the key is new
 		if not existent
-			@stats.ksize += @_getKeyLength( key )
-			@stats.keys++
+			@_keyCount++
+			if @options.enableStats
+				@stats.ksize += @_getKeyLength( key )
+				@stats.keys++
 
 		@emit( "set", key, value )
 
@@ -246,12 +328,12 @@ module.exports = class NodeCache extends EventEmitter
 	#
 	
 	mset: ( keyValueSet ) =>
-		# check if cache is overflowing
-		if (@options.maxKeys > -1 && @stats.keys + keyValueSet.length >= @options.maxKeys)
-			_err = @_error( "ECACHEFULL" )
+		unless Array.isArray( keyValueSet )
+			_err = @_error( "EKEYSTYPE" )
 			throw _err
 		
 		# loop over keyValueSet to validate key and ttl
+		newKeysToAdd = {}
 
 		for keyValuePair in keyValueSet
 			{ key, val, ttl } = keyValuePair
@@ -265,6 +347,15 @@ module.exports = class NodeCache extends EventEmitter
 			# handle invalid key types
 			if (err = @_isInvalidKey( key ))?
 				throw err
+
+			key = key.toString()
+			if not @data[ key ]? and not newKeysToAdd[ key ]?
+				newKeysToAdd[ key ] = true
+
+		# check if cache is overflowing
+		if (@options.maxKeys > -1 && @_keyCount + Object.keys(newKeysToAdd).length > @options.maxKeys)
+			_err = @_error( "ECACHEFULL" )
+			throw _err
 
 		for keyValuePair in keyValueSet
 			{ key, val, ttl } = keyValuePair
@@ -300,9 +391,11 @@ module.exports = class NodeCache extends EventEmitter
 			# only delete if existent
 			if @data[ key ]?
 				# calc the stats
-				@stats.vsize -= @_getValLength( @_unwrap( @data[ key ], false ) )
-				@stats.ksize -= @_getKeyLength( key )
-				@stats.keys--
+				if @options.enableStats
+					@stats.vsize -= @_getValLength( @_unwrap( @data[ key ], false ) )
+					@stats.ksize -= @_getKeyLength( key )
+					@stats.keys--
+				@_keyCount--
 				delCount++
 				# delete the value
 				oldVal = @data[ key ]
@@ -368,6 +461,9 @@ module.exports = class NodeCache extends EventEmitter
 			# if ttl < 0 delete the key. otherwise reset the value
 			if ttl >= 0
 				@data[ key ] = @_wrap( @data[ key ].v, ttl, false )
+				# push updated TTL to expiry heap (old entry becomes stale)
+				if @data[ key ].t > 0
+					@_expiryHeap.push( key, @data[ key ].t )
 			else
 				@del( key )
 			return true
@@ -401,9 +497,13 @@ module.exports = class NodeCache extends EventEmitter
 		if (err = @_isInvalidKey( key ))?
 			throw err
 
+		data = @data[ key ]
+
 		# check for existant data and update the ttl value
-		if @data[ key ]? and @_check( key, @data[ key ] )
-			_ttl = @data[ key ].t
+		if data? and @_check( key, data )
+			if not @data[ key ]?
+				return undefined
+			_ttl = data.t
 			return _ttl
 		else
 			# return undefined if key has not been found
@@ -448,7 +548,10 @@ module.exports = class NodeCache extends EventEmitter
 	#     # true
 	#
 	has: ( key )=>
-		_exists = @data[ key ]? and @_check( key, @data[ key ] )
+		data = @data[ key ]
+		_exists = data? and @_check( key, data )
+		if _exists and not @data[ key ]?
+			return false
 		return _exists
 
 	# ## getStats
@@ -499,6 +602,12 @@ module.exports = class NodeCache extends EventEmitter
 
 		# set data empty
 		@data = {}
+
+		# reset expiry heap
+		@_expiryHeap.clear()
+
+		# reset key counter
+		@_keyCount = 0
 
 		# reset stats
 		@stats =
@@ -563,11 +672,17 @@ module.exports = class NodeCache extends EventEmitter
 	# ## _checkData
 	#
 	# internal housekeeping method.
-	# Check all the cached data and delete the invalid values
+	# Drain expired entries from the min-heap and delete invalid values
 	_checkData: ( startPeriod = true )=>
-		# run the housekeeping method
-		for key, value of @data
-			@_check( key, value )
+		now = Date.now()
+		# pop expired entries from the heap
+		while (top = @_expiryHeap.peek())?
+			break if top.expireAt > now
+			@_expiryHeap.pop()
+			data = @data[top.key]
+			# validate: key still exists and TTL matches (lazy deletion of stale entries)
+			if data? and data.t is top.expireAt
+				@_check(top.key, data)
 
 		if startPeriod and @options.checkperiod > 0
 			@checkTimeout = setTimeout( @_checkData, ( @options.checkperiod * 1000 ), startPeriod )
@@ -591,7 +706,10 @@ module.exports = class NodeCache extends EventEmitter
 			if @options.deleteOnExpire
 				_retval = false
 				@del( key )
-			@emit( "expired", key, @_unwrap(data) )
+				@emit( "expired", key, @_unwrap(data) )
+			else if not data.e
+				data.e = true
+				@emit( "expired", key, @_unwrap(data) )
 
 		return _retval
 
@@ -631,20 +749,28 @@ module.exports = class NodeCache extends EventEmitter
 		# return the wrapped value
 		oReturn =
 			t: livetime
+			e: false
 			v: if asClone then clone( value ) else value
 
 	# ## _unwrap
 	#
 	# internal method to extract get the value out of the wrapped value
 	_unwrap: ( value, asClone = true )->
+		if not value? or typeof value isnt "object"
+			return undefined
+
 		if not @options.useClones
 			asClone = false
-		if value.v?
-			if asClone
-				return clone( value.v )
-			else
-				return value.v
-		return null
+
+		if not Object::hasOwnProperty.call( value, "v" )
+			return undefined
+
+		if typeof value.v is "undefined"
+			return undefined
+
+		if asClone
+			return clone( value.v )
+		return value.v
 
 	# ## _getKeyLength
 	#
