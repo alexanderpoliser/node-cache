@@ -1,5 +1,8 @@
 import { ErrorTemplates, ErrorGenerators, NodeCacheError } from "./types";
 
+/**
+ * Static error message templates by error code.
+ */
 export const ERROR_TEMPLATES: ErrorTemplates = {
   ENOTFOUND: "Key `__key` not found",
   ECACHEFULL: "Cache max keys amount exceeded",
@@ -8,6 +11,9 @@ export const ERROR_TEMPLATES: ErrorTemplates = {
   ETTLTYPE: "The ttl argument has to be a number.",
 };
 
+/**
+ * Compile plain template strings into message generator functions.
+ */
 export function compileErrorTemplates(templates: ErrorTemplates): ErrorGenerators {
   const generators: ErrorGenerators = {};
   for (const code of Object.keys(templates)) {
@@ -17,6 +23,12 @@ export function compileErrorTemplates(templates: ErrorTemplates): ErrorGenerator
   return generators;
 }
 
+/**
+ * Create a typed cache error carrying:
+ * - `name` and `errorcode` as the same code
+ * - formatted message from template
+ * - optional structured `data`
+ */
 export function createError(
   type: string,
   generators: ErrorGenerators,

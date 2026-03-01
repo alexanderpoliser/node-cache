@@ -1,21 +1,37 @@
 import { HeapEntry } from "./types";
 
+/**
+ * Minimal binary min-heap for expiration scheduling.
+ * Items are ordered by `expireAt` ascending.
+ */
 export class MinHeap {
   private _heap: HeapEntry[] = [];
 
+  /**
+   * Number of entries currently stored.
+   */
   size(): number {
     return this._heap.length;
   }
 
+  /**
+   * Return top entry without removing it.
+   */
   peek(): HeapEntry | null {
     return this._heap[0] || null;
   }
 
+  /**
+   * Insert a new expiration entry.
+   */
   push(key: string, expireAt: number): void {
     this._heap.push({ key, expireAt });
     this._bubbleUp(this._heap.length - 1);
   }
 
+  /**
+   * Remove and return top (smallest expiration) entry.
+   */
   pop(): HeapEntry | undefined {
     const top = this._heap[0];
     const last = this._heap.pop();
@@ -26,10 +42,16 @@ export class MinHeap {
     return top;
   }
 
+  /**
+   * Remove all entries.
+   */
   clear(): void {
     this._heap = [];
   }
 
+  /**
+   * Restore heap ordering after insertion.
+   */
   private _bubbleUp(idx: number): void {
     while (idx > 0) {
       const parent = (idx - 1) >> 1;
@@ -44,6 +66,9 @@ export class MinHeap {
     }
   }
 
+  /**
+   * Restore heap ordering after root replacement/removal.
+   */
   private _sinkDown(idx: number): void {
     const len = this._heap.length;
     for (;;) {

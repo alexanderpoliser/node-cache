@@ -1,8 +1,13 @@
 {
-	"compilerOptions": {
-		"outDir": "./test"
-	},
-	"include": [
-		"./_src/**/*"
-]
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": [
+    "./src/**/*.ts",
+    "./_src/**/*.ts"
+  ]
 }
